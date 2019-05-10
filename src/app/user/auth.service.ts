@@ -5,13 +5,24 @@ import { Subject } from 'rxjs/Subject';
 import { Observable } from 'rxjs/Observable';
 import { BehaviorSubject } from 'rxjs/BehaviorSubject';
 
+import {CognitoUserPool, CognitoUserAttribute, CognitoUser, AuthenticationDetails} from 'amazon-cognito-identity-js';
+
 import { User } from './user.model';
+
+const poolData = {
+  UserPoolId: 'us-east-2_HmPBTielg',
+  ClientId: '413pr9b9f97q0r6tpldsc27jlb'
+};
+
+const userPool = new CognitoUserPool(poolData);
 
 @Injectable()
 export class AuthService {
   authIsLoading = new BehaviorSubject<boolean>(false);
   authDidFail = new BehaviorSubject<boolean>(false);
   authStatusChanged = new Subject<boolean>();
+  registeredUser: CognitoUser;
+
   constructor(private router: Router) {}
   signUp(username: string, email: string, password: string): void {
     this.authIsLoading.next(true);
@@ -20,17 +31,44 @@ export class AuthService {
       email: email,
       password: password
     };
+    const attrList: CognitoUserAttribute[] = [];
     const emailAttribute = {
       Name: 'email',
       Value: user.email
     };
+    attrList.push(new CognitoUserAttribute(emailAttribute));
+    userPool.signUp(user.username, user.password, attrList, null, (err, result) => {
+      if (err) {
+        this.authDidFail.next(true);
+        this.authIsLoading.next(false);
+        return;
+      }
+      this.authDidFail.next(false);
+      this.authIsLoading.next(false);
+      this.registeredUser = result.user;
+
+    } );
+
     return;
   }
   confirmUser(username: string, code: string) {
     this.authIsLoading.next(true);
     const userData = {
       Username: username,
+      Pool: userPool
     };
+    const cognitUser = new CognitoUser(userData);
+    cognitUser.confirmRegistration(code, true, (err, result) =>{
+      if (err) {
+        this.authDidFail.next(true);
+        this.authIsLoading.next(false);
+        return;
+      }
+
+      this.authDidFail.next(false);
+      this.authIsLoading.next(false);
+      this.router.navigate(['/']);
+    });
   }
   signIn(username: string, password: string): void {
     this.authIsLoading.next(true);
@@ -38,12 +76,36 @@ export class AuthService {
       Username: username,
       Password: password
     };
+    const authDetails = new AuthenticationDetails(authData);
+    const userData = {
+      Username: username,
+      Pool: userPool
+    }
+    const cognitUser = new CognitoUser(userData);
+    const that = this;
+    cognitUser.authenticateUser(authDetails, {
+      onSuccess (result) {
+        that.authStatusChanged.next(true);
+        that.authDidFail.next(false);
+        that.authIsLoading.next(false);
+        console.log(result)
+        //const accessToken = result.getAccessToken().getJwtToken();
+
+      },
+      onFailure (err) {
+        that.authDidFail.next(true);
+        that.authIsLoading.next(false);
+        console.log(err)
+      }
+    });
     this.authStatusChanged.next(true);
     return;
   }
   getAuthenticatedUser() {
+    return userPool.getCurrentUser()
   }
   logout() {
+    this.getAuthenticatedUser().signOut();
     this.authStatusChanged.next(false);
   }
   isAuthenticated(): Observable<boolean> {
@@ -52,7 +114,17 @@ export class AuthService {
       if (!user) {
         observer.next(false);
       } else {
-        observer.next(false);
+        user.getSession((err, session) => {
+          if (err) {
+            observer.next(false);
+          } else {
+            if (session.isValid()) {
+              observer.next(true);
+            } else {
+              observer.next(false);
+            }
+          }
+        });        
       }
       observer.complete();
     });
